@@ -1,0 +1,110 @@
+import numpy as np
+import tensorflow as tf
+from collections import deque
+import random
+
+# Define the state representation function
+def get_state(vehicle_states):
+    # vehicle_states: [(position, speed), ...]
+    state = np.zeros((2, 3))  # 2 lanes, 3 features (position, speed, has_vehicle)
+    for position, speed in vehicle_states:
+        lane = 0 if position < 0 else 1
+        state[lane][0] = position
+        state[lane][1] = speed
+        state[lane][2] = 1
+    return state
+
+# Define the Deep Q-Network
+class DQNAgent:
+    def _init_(self, state_size, action_size):
+        self.state_size = state_size
+        self.action_size = action_size
+        self.memory = deque(maxlen=2000)
+        self.gamma = 0.95    # discount rate
+        self.epsilon = 1.0  # exploration rate
+        self.epsilon_min = 0.01
+        self.epsilon_decay = 0.995
+        self.learning_rate = 0.001
+        self.model = self._build_model()
+
+    def _build_model(self):
+        model = tf.keras.Sequential()
+        model.add(tf.keras.layers.Dense(24, input_shape=(self.state_size,), activation='relu'))
+        model.add(tf.keras.layers.Dense(24, activation='relu'))
+        model.add(tf.keras.layers.Dense(self.action_size, activation='linear'))
+        model.compile(loss='mse', optimizer=tf.keras.optimizers.Adam(lr=self.learning_rate))
+        return model
+
+    def remember(self, state, action, reward, next_state, done):
+        self.memory.append((state, action, reward, next_state, done))
+
+    def act(self, state):
+        if np.random.rand() <= self.epsilon:
+            return random.randrange(self.action_size)
+        act_values = self.model.predict(state)
+        return np.argmax(act_values[0])
+
+    def replay(self, batch_size):
+        minibatch = random.sample(self.memory, batch_size)
+        for state, action, reward, next_state, done in minibatch:
+            target = reward
+            if not done:
+                target = (reward + self.gamma * np.amax(self.model.predict(next_state)[0]))
+            target_f = self.model.predict(state)
+            target_f[0][action] = target
+            self.model.fit(state, target_f, epochs=1, verbose=0)
+        if self.epsilon > self.epsilon_min:
+            self.epsilon *= self.epsilon_decay
+
+# Define the environment
+class IntersectionEnvironment:
+    def _init_(self):
+        self.vehicles = [(5, 5), (5, 10), (-10, 5)]  # Vehicle positions and speeds [(position, speed), ...]
+        self.agent = DQNAgent(state_size=6, action_size=3)  # Define agent with state and action size
+        self.state = None
+
+    def step(self, action):
+        # Action: 0 - Speed up, 1 - Maintain speed, 2 - Slow down
+        reward = 0
+        done = False
+        for i, vehicle in enumerate(self.vehicles):
+            position, speed = vehicle
+            if action == 0:
+                speed += 1
+            elif action == 2:
+                speed -= 1
+            position -= speed
+            self.vehicles[i] = (position, speed)
+            if position <= 0:
+                done = True
+                reward -= 10  # Negative reward for collision
+            if position < 10 and position > 0:  # Reward for reaching destination
+                reward += 10
+        self.state = get_state(self.vehicles)
+        return self.state, reward, done
+
+    def reset(self):
+        self.vehicles = [(5, 5), (5, 10), (-10, 5)]
+        self.state = get_state(self.vehicles)
+        return self.state
+
+# Training
+env = IntersectionEnvironment()
+batch_size = 32
+num_episodes = 1000
+for e in range(num_episodes):
+    state = env.reset()
+    state = np.reshape(state, [1, 6])
+    for time in range(500):
+        action = env.agent.act(state)
+        next_state, reward, done = env.step(action)
+        next_state = np.reshape(next_state, [1, 6])
+        env.agent.remember(state, action, reward, next_state, done)
+        state = next_state
+        if done:
+            print("episode: {}/{}, score: {}, e: {:.2}".format(e, num_episodes, time, env.agent.epsilon))
+            break
+    if len(env.agent.memory) > batch_size:
+        env.agent.replay(batch_size)
+
+
